@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: game-lister-backend
+    runtime: docker
+    plan: free
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: RAWG_API_KEY
+        sync: false
