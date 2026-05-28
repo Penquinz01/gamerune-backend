@@ -267,7 +267,7 @@ static async Task<string[]> GetGameImageUrlsAsync(
 
     if (!screenshotsResponse.IsSuccessStatusCode)
     {
-        return [.. imageUrls.Distinct()];
+        return [.. imageUrls.Distinct().Take(3)];
     }
 
     var screenshots = await screenshotsResponse.Content.ReadFromJsonAsync<RawgScreenshotsResponse>(cancellationToken);
@@ -276,7 +276,7 @@ static async Task<string[]> GetGameImageUrlsAsync(
             .Select(screenshot => screenshot.Image)
             .Where(image => !string.IsNullOrWhiteSpace(image)) ?? []);
 
-    return [.. imageUrls.Distinct()];
+    return [.. imageUrls.Distinct().Take(3)];
 }
 
 static async Task<int?> GetSteamAppIdAsync(HttpClient rawgClient, string rawgApiKey, string gameId, CancellationToken cancellationToken)
