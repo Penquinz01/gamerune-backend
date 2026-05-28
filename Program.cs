@@ -232,18 +232,51 @@ static async Task<GameDetailDto?> GetGameDetailAsync(
     var steamPrice = steamAppId is null
         ? null
         : await GetSteamPriceAsync(steamClient, steamAppId.Value, countryCode, cancellationToken);
+    var imageUrls = await GetGameImageUrlsAsync(rawgClient, rawgApiKey, gameId, rawgGame.BackgroundImage, cancellationToken);
 
     return new GameDetailDto
     {
         Id = rawgGame.Id,
         Name = rawgGame.Name,
         ImageUrl = rawgGame.BackgroundImage,
+        ImageUrls = imageUrls,
         Description = rawgGame.DescriptionRaw ?? rawgGame.Description,
         Released = rawgGame.Released,
         Rating = rawgGame.Rating,
         SteamAppId = steamAppId,
         SteamPrice = steamPrice
     };
+}
+
+static async Task<string[]> GetGameImageUrlsAsync(
+    HttpClient rawgClient,
+    string rawgApiKey,
+    string gameId,
+    string? backgroundImage,
+    CancellationToken cancellationToken)
+{
+    var imageUrls = new List<string>();
+    if (!string.IsNullOrWhiteSpace(backgroundImage))
+    {
+        imageUrls.Add(backgroundImage);
+    }
+
+    var screenshotsResponse = await rawgClient.GetAsync(
+        $"games/{Uri.EscapeDataString(gameId)}/screenshots?key={Uri.EscapeDataString(rawgApiKey)}",
+        cancellationToken);
+
+    if (!screenshotsResponse.IsSuccessStatusCode)
+    {
+        return [.. imageUrls.Distinct()];
+    }
+
+    var screenshots = await screenshotsResponse.Content.ReadFromJsonAsync<RawgScreenshotsResponse>(cancellationToken);
+    imageUrls.AddRange(
+        screenshots?.Results
+            .Select(screenshot => screenshot.Image)
+            .Where(image => !string.IsNullOrWhiteSpace(image)) ?? []);
+
+    return [.. imageUrls.Distinct()];
 }
 
 static async Task<int?> GetSteamAppIdAsync(HttpClient rawgClient, string rawgApiKey, string gameId, CancellationToken cancellationToken)

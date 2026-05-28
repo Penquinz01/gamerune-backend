@@ -8,6 +8,8 @@ public class GameDetailDto
 
     public string? ImageUrl { get; set; }
 
+    public string[] ImageUrls { get; set; } = [];
+
     public string? Description { get; set; }
 
     public DateOnly? Released { get; set; }
