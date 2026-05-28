@@ -17,7 +17,7 @@ builder.Services.AddCors(options =>
     options.AddPolicy("Frontend", policy =>
     {
         var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-            ?? ["http://localhost:3000", "http://localhost:5173", "http://localhost:4200"];
+            ?? ["http://localhost:3000", "http://localhost:5173", "http://localhost:4200", "https://gamerune.vercel.app"];
 
         policy
             .WithOrigins(allowedOrigins)
