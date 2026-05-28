@@ -1,0 +1,57 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build output
+bin/
+obj/
+out/
+publish/
+
+# User-specific files
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+
+# .NET generated files
+GeneratedMSBuildEditorConfig.editorconfig
+*.AssemblyInfoInputs.cache
+*.AssemblyInfo.cs
+*.GeneratedMSBuildEditorConfig.editorconfig
+*.g.cs
+*.g.i.cs
+*.metaproj
+*.nupkg
+*.snupkg
+project.assets.json
+project.nuget.cache
+
+# Test and coverage output
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+*.trx
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.pid
+*.swp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
