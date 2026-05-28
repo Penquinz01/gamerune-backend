@@ -8,6 +8,7 @@ bin/
 obj/
 out/
 publish/
+publish-test/
 
 # User-specific files
 *.user
