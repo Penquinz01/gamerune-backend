@@ -21,6 +21,7 @@
 - [Tech Stack](#-tech-stack)
 - [API Reference](#-api-reference)
 - [Pagination](#-pagination)
+- [Database](#️-database)
 - [Getting Started](#-getting-started)
 - [Configuration](#-configuration)
 - [Running with Docker](#-running-with-docker)
@@ -42,8 +43,13 @@
   - Live Steam price via `store.steampowered.com/api/appdetails` with `cc={countryCode}`
   - Free-to-play handling (`FinalFormatted: "Free"`)
 - 📄 **Pagination** — `page` / `pageSize` forwarded to RAWG as `page` / `page_size`, with `totalPages`, `hasNext` / `hasPrevious`, and backend-relative `next` / `previous` links (no API-key leakage).
+- 👤 **Auth + users** — `POST /auth/register`, `POST /auth/login` (PBKDF2 password hashing, JWT Bearer).
+- ⭐ **Favorites library** — `GET /me/favorites`, `POST /me/favorites`, `DELETE /me/favorites/{rawgId}` with `wishlist|favorite|owned|playing|completed` statuses.
+- 📝 **Reviews** — `GET /games/{id}/reviews`, `POST /games/{id}/reviews` (score 1–5, one per user per game).
+- 💾 **RAWG cache** — `GET /games/{id}` auto-upserts into Postgres (`Games` table); `POST /games/{id}/cache` for explicit caching.
+- ⏰ **Price history + alerts** — every detail view records Steam prices; `GET /games/{id}/price-history`, `POST /games/{id}/alerts`, background `PriceSyncWorker` refreshes prices and flips alerts when the target is hit.
 - 🛡️ **Rate limiting** — fixed-window `GameApi` policy (default 60 req/min, configurable).
-- 🌐 **CORS** — allow-listed for local dev ports + `https://gamerune.vercel.app`.
+- 🌐 **CORS** — allow-listed for local dev ports + `https://gamerune.vercel.app` + `https://gamerune.janbaas.me`.
 - 📘 **OpenAPI / Swagger** — Swashbuckle + built-in OpenAPI in Development.
 - 🔑 **Flexible API-key loading** — `RAWG_API_KEY` env var → `.env` file → `appsettings.json` (`Rawg:ApiKey`).
 - 🐳 **Docker + Render ready** — multi-stage Dockerfile, `PORT`-aware startup, `render.yaml` blueprint.
@@ -75,7 +81,7 @@
     └──────────────────┘          └──────────────────┘
 ```
 
-The API is stateless: every request proxies RAWG + Steam live and returns a normalized DTO. No database.
+The API proxies RAWG + Steam live and persists users, library, reviews, game cache, and price data in Postgres. RAWG-facing reads stay usable without a DB configured, but auth/library/review/price endpoints require it.
 
 Request flow for `GET /games/{id}`:
 
@@ -95,6 +101,8 @@ Request flow for `GET /games/{id}`:
 | Runtime | .NET 10 / ASP.NET Core Minimal APIs |
 | Docs | Swashbuckle + Microsoft.AspNetCore.OpenApi |
 | HTTP | `IHttpClientFactory` named clients (`Rawg`, `Steam`) |
+| DB | PostgreSQL + Entity Framework Core (`Npgsql.EntityFrameworkCore.PostgreSQL`, auto-migrate on startup) |
+| Auth | PBKDF2 password hashing + JWT Bearer |
 | Hosting | Docker (multi-stage) → Render Web Service |
 | Frontend | Separate repo, deployed on Vercel |
 
@@ -109,6 +117,17 @@ Base URL (local): `http://localhost:5054`
 | `GET` | `/games?page=1&pageSize=20&search=` | Paginated game list | ✅ `GameApi` |
 | `GET` | `/games/search/details?query=elden+ring&page=1&pageSize=5&countryCode=US` | Search + hydrated details | ✅ `GameApi` |
 | `GET` | `/games/{id}?countryCode=US` | Full detail by RAWG id or slug | ✅ `GameApi` |
+| `POST` | `/auth/register` | Register `{username, email, password}` → `{token, user}` | ❌ |
+| `POST` | `/auth/login` | Login `{usernameOrEmail, password}` → `{token, user}` | ❌ |
+| `GET` | `/me` | Current profile (Bearer) | ❌ |
+| `GET` | `/me/favorites?status=` | Library (Bearer) | ❌ |
+| `POST` | `/me/favorites` | Upsert `{rawgId, status}` (Bearer) | ❌ |
+| `DELETE` | `/me/favorites/{rawgId}` | Remove (Bearer) | ❌ |
+| `GET` | `/games/{id}/reviews` | List reviews | ❌ |
+| `POST` | `/games/{id}/reviews` | Upsert `{score 1-5, body}` (Bearer) | ❌ |
+| `GET` | `/games/{id}/price-history?countryCode=US` | Price points, newest first | ❌ |
+| `POST` | `/games/{id}/alerts` | Create `{targetCents}` alert (Bearer) | ❌ |
+| `POST` | `/games/{id}/cache` | Force RAWG → Postgres caching | ❌ |
 
 ### `GET /games`
 
@@ -212,10 +231,34 @@ Host: localhost:5054
 | Status | When |
 |---|---|
 | `400` | missing `query` / `id` → `{ "message": "Search query is required." }` |
+| `401` | missing/invalid JWT on `/me/*`, review POST, alert POST |
 | `404` | RAWG game not found → `{ "message": "Game was not found." }` |
+| `409` | duplicate username/email on register |
 | `429` | `GameApi` fixed-window exceeded |
 | `500` | `RAWG_API_KEY` not configured |
 | `502` | upstream RAWG request failed |
+
+---
+
+## 🗄️ Database
+
+PostgreSQL (Render Postgres in production, local Docker for dev) via EF Core. Schema lives in `Data/` (`GameRuneDbContext` + `Data/Migrations`); the app runs `Database.Migrate()` on startup so Render deploys need no manual step.
+
+Tables: `Users`, `Games` (RAWG cache: `RawgId` PK, `Slug` unique, cover + `ImageUrls[]`, `SteamAppId`, payload, `CachedAt/UpdatedAt`), `Favorites` (composite PK, `wishlist|favorite|owned|playing|completed` check), `Reviews` (one per user per game, `Score 1–5` check), `PriceHistory` (`GameId, CapturedAt` index), `PriceAlerts` (flipped to `Triggered` by the detail path and the worker).
+
+Connection resolution (`Configuration/Database.cs`): `DATABASE_URL` (Render) → `ConnectionStrings:Default` (`ConnectionStrings__Default` env). Local default: `Host=localhost;Database=gamerune;Username=postgres;Password=postgres`.
+
+```bash
+# local Postgres
+docker run --rm -p 5432:5432 -e POSTGRES_DB=gamerune -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres postgres:16
+
+# new migration after entity changes
+dotnet ef migrations add <Name> --project "..csproj" --output-dir Data/Migrations
+```
+
+Auth: `Jwt:Key` (or `JWT_KEY`, min 32 chars) + `Jwt:Issuer/Audience/ExpiryMinutes`. Dev has a dummy key in `appsettings.Development.json`; production must set `JWT_KEY` (see `render.yaml`, `sync: false`).
+
+Price sync: `PriceSync:Enabled` (default `true`, `false` in Development) + `PriceSync:IntervalHours` (default `6`). `PriceSyncWorker` re-fetches Steam prices for cached games and triggers alerts.
 
 ---
 
@@ -298,6 +341,8 @@ curl "http://localhost:5054/games/search/details?query=elden%20ring&pageSize=2"
 | Key | Source | Default | Description |
 |---|---|---|---|
 | `RAWG_API_KEY` | env / `.env` / `Rawg:ApiKey` | — (required) | RAWG API key |
+| `ConnectionStrings__Default` / `DATABASE_URL` | env / `.env` | local Postgres default | Postgres connection (Render injects it) |
+| `JWT_KEY` / `Jwt:Key` | env / `.env` | dev dummy only | JWT signing key, min 32 chars (required in prod) |
 | `Cors:AllowedOrigins` | `appsettings.json` | `localhost:3000,5173,4200` | Frontend origins |
 | `RateLimiting:GameApi:PermitLimit` | `appsettings.json` | `60` | Requests per window |
 | `RateLimiting:GameApi:WindowSeconds` | `appsettings.json` | `60` | Window size (s) |
@@ -332,6 +377,12 @@ The image is multi-stage (`sdk:10.0` → `aspnet:10.0`), exposes `10000`, and ru
 `render.yaml` defines a Docker web service:
 
 ```yaml
+databases:
+  - name: gamerune-db
+    plan: free
+    databaseName: gamerune
+    user: gamerune
+
 services:
   - type: web
     name: game-lister-backend
@@ -342,14 +393,20 @@ services:
         value: Production
       - key: RAWG_API_KEY
         sync: false   # set in Render dashboard
+      - key: JWT_KEY
+        sync: false   # set in Render dashboard (min 32 chars)
+      - key: ConnectionStrings__Default
+        fromDatabase:
+          name: gamerune-db
+          property: connectionString
 ```
 
 Steps:
 
 1. Push to GitHub.
-2. Render → **New → Blueprint** → select repo (picks up `render.yaml`).
-3. Set `RAWG_API_KEY` in the Render dashboard (sync: false means manual).
-4. Deploy.
+2. Render → **New → Blueprint** → select repo (picks up `render.yaml` — provisions web service + Postgres).
+3. Set `RAWG_API_KEY` and `JWT_KEY` in the Render dashboard (sync: false means manual).
+4. Deploy. Migrations run automatically on startup.
 
 ---
 
@@ -371,6 +428,12 @@ gamerune-backend/
 │   ├── RawgGameStoresResponse.cs
 │   ├── RawgScreenshotsResponse.cs
 │   └── SteamAppDetailsResponse.cs
+├── Data/                       # EF Core: entities + GameRuneDbContext + Migrations
+├── Services/
+│   ├── GameRuneAuth.cs         # PBKDF2 hashing + JWT issuance
+│   └── PriceSyncWorker.cs      # Background Steam price refresh + alert triggers
+├── Features/
+│   └── DbEndpoints.cs          # Auth, favorites, reviews, price-history, alerts, cache
 ├── Dockerfile                  # Multi-stage .NET 10 build
 ├── render.yaml                 # Render blueprint
 ├── appsettings.json

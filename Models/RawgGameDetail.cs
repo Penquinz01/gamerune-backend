@@ -8,6 +8,8 @@ public class RawgGameDetail
 
     public string Name { get; set; } = string.Empty;
 
+    public string? Slug { get; set; }
+
     [JsonPropertyName("background_image")]
     public string? BackgroundImage { get; set; }
 

@@ -1,7 +1,14 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 using System.Threading.RateLimiting;
 using GameListerBackend.Configuration;
+using GameListerBackend.Data;
+using GameListerBackend.Features;
 using GameListerBackend.Models;
+using GameListerBackend.Services;
 
 EnvFile.Load();
 
@@ -50,6 +57,33 @@ builder.Services.AddHttpClient("Steam", client =>
     client.BaseAddress = new Uri("https://store.steampowered.com/api/");
 });
 
+var connectionString = Database.GetConnectionString(builder.Configuration);
+if (!string.IsNullOrWhiteSpace(connectionString))
+{
+    builder.Services.AddDbContext<GameRuneDbContext>(options => options.UseNpgsql(connectionString));
+    builder.Services.AddHostedService<PriceSyncWorker>();
+}
+
+var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY");
+if (!string.IsNullOrWhiteSpace(jwtKey))
+{
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "gamerune",
+                ValidAudience = builder.Configuration["Jwt:Audience"] ?? "gamerune-frontend",
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+            };
+        });
+    builder.Services.AddAuthorization();
+}
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -63,6 +97,26 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseCors("Frontend");
 app.UseRateLimiter();
+
+if (!string.IsNullOrWhiteSpace(jwtKey))
+{
+    app.UseAuthentication();
+    app.UseAuthorization();
+}
+
+if (!string.IsNullOrWhiteSpace(connectionString))
+{
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<GameRuneDbContext>().Database.Migrate();
+        DbEndpoints.MapDbEndpoints(app);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Database migration failed; DB endpoints disabled.");
+    }
+}
 
 app.MapGet("/games", async (
     IHttpClientFactory httpClientFactory,
@@ -214,9 +268,26 @@ app.MapGet("/games/{id}", async (
         countryCode,
         cancellationToken);
 
-    return gameDetail is null
-        ? Results.NotFound(new { message = "Game was not found." })
-        : Results.Ok(gameDetail);
+    if (gameDetail is null)
+    {
+        return Results.NotFound(new { message = "Game was not found." });
+    }
+
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetService<GameRuneDbContext>();
+        if (db is not null)
+        {
+            await DbEndpoints.UpsertGameDetailAsync(gameDetail, id, db);
+            await DbEndpoints.RecordPriceAsync(gameDetail, countryCode, db);
+        }
+    }
+    catch
+    {
+    }
+
+    return Results.Ok(gameDetail);
 })
 .WithName("GetGameDetail")
 .RequireRateLimiting("GameApi");

@@ -1,3 +1,9 @@
+databases:
+  - name: gamerune-db
+    plan: free
+    databaseName: gamerune
+    user: gamerune
+
 services:
   - type: web
     name: game-lister-backend
@@ -8,3 +14,13 @@ services:
         value: Production
       - key: RAWG_API_KEY
         sync: false
+      - key: JWT_KEY
+        sync: false
+      - key: Jwt__Issuer
+        value: gamerune
+      - key: Jwt__Audience
+        value: gamerune-frontend
+      - key: ConnectionStrings__Default
+        fromDatabase:
+          name: gamerune-db
+          property: connectionString
