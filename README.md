@@ -8,7 +8,7 @@
 [![Render](https://img.shields.io/badge/Render-deploy-46E3B7?style=flat-square&logo=render)](./render.yaml)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 
-**Live API:** `https://gamerune-backend.onrender.com` *(example — replace with your Render URL)*
+**Live API:** `https://gamerune-backend.onrender.com`
 **Frontend:** `https://gamerune.vercel.app`
 **Swagger (dev):** `http://localhost:5054/swagger`
 
@@ -20,44 +20,33 @@
 - [Architecture](#-architecture)
 - [Tech Stack](#-tech-stack)
 - [API Reference](#-api-reference)
-- [Database](#-database)
+- [Pagination](#-pagination)
 - [Getting Started](#-getting-started)
 - [Configuration](#-configuration)
 - [Running with Docker](#-running-with-docker)
-- [Deployment](#-deployment-render)
+- [Deployment](#️-deployment-render)
 - [Project Structure](#-project-structure)
-- [Rate Limiting & CORS](#-rate-limiting--cors)
-- [Roadmap](#-roadmap)
+- [Rate Limiting & CORS](#️-rate-limiting--cors)
 - [Contributing](#-contributing)
 
 ---
 
 ## ✨ Features
 
-### Implemented
-
 - 📃 **Game listing** — paginated `GET /games` backed by RAWG, normalized to a lean `GameDto`.
-- 🔍 **Search + hydrate** — `GET /games/search/details` searches RAWG then hydrates each hit into a full detail object (description, screenshots, Steam price).
+- 🔍 **Search + hydrate** — `GET /games/search/details` searches RAWG then hydrates each hit in parallel into a full detail object (description, screenshots, Steam price).
 - 📄 **Game details aggregation** — `GET /games/{id}` merges in one response:
   - RAWG detail (`description`, `released`, `rating`)
   - Up to 3 images (cover + screenshots)
   - Steam `appId` resolved via RAWG `/stores` endpoint
   - Live Steam price via `store.steampowered.com/api/appdetails` with `cc={countryCode}`
   - Free-to-play handling (`FinalFormatted: "Free"`)
+- 📄 **Pagination** — `page` / `pageSize` forwarded to RAWG as `page` / `page_size`, with `totalPages`, `hasNext` / `hasPrevious`, and backend-relative `next` / `previous` links (no API-key leakage).
 - 🛡️ **Rate limiting** — fixed-window `GameApi` policy (default 60 req/min, configurable).
 - 🌐 **CORS** — allow-listed for local dev ports + `https://gamerune.vercel.app`.
 - 📘 **OpenAPI / Swagger** — Swashbuckle + built-in OpenAPI in Development.
 - 🔑 **Flexible API-key loading** — `RAWG_API_KEY` env var → `.env` file → `appsettings.json` (`Rawg:ApiKey`).
 - 🐳 **Docker + Render ready** — multi-stage Dockerfile, `PORT`-aware startup, `render.yaml` blueprint.
-
-### Complete-project vision (v1.0)
-
-- 👤 Auth + users (JWT, ASP.NET Identity)
-- ⭐ Favorites / wishlist / owned library per user
-- 📝 Reviews & ratings (user reviews alongside RAWG rating)
-- 💾 Cached game catalog in Postgres (reduces RAWG quota usage)
-- ⏰ Background price-sync worker (refresh Steam prices hourly)
-- 🔔 Price-drop alerts
 
 ---
 
@@ -84,13 +73,9 @@
     │  screenshots,    │          │  price_overview  │
     │  stores          │          │                  │
     └──────────────────┘          └──────────────────┘
-              │
-              ▼ (v1.0)
-    ┌──────────────────┐
-    │   PostgreSQL 16  │  ← EF Core: cache + users + favorites + reviews
-    │  (Render Postgres)│
-    └──────────────────┘
 ```
+
+The API is stateless: every request proxies RAWG + Steam live and returns a normalized DTO. No database.
 
 Request flow for `GET /games/{id}`:
 
@@ -110,8 +95,6 @@ Request flow for `GET /games/{id}`:
 | Runtime | .NET 10 / ASP.NET Core Minimal APIs |
 | Docs | Swashbuckle + Microsoft.AspNetCore.OpenApi |
 | HTTP | `IHttpClientFactory` named clients (`Rawg`, `Steam`) |
-| DB (v1.0 complete) | PostgreSQL 16 + Entity Framework Core 10 (`Npgsql.EntityFrameworkCore.PostgreSQL`) |
-| Auth (v1.0 complete) | ASP.NET Core Identity + JWT Bearer |
 | Hosting | Docker (multi-stage) → Render Web Service |
 | Frontend | Separate repo, deployed on Vercel |
 
@@ -137,7 +120,12 @@ Host: localhost:5054
 ```json
 {
   "count": 10234,
-  "next": "https://api.rawg.io/api/games?...&page=2",
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 512,
+  "hasNext": true,
+  "hasPrevious": false,
+  "next": "/games?page=2&pageSize=20&search=witcher",
   "previous": null,
   "results": [
     { "id": 3328, "name": "The Witcher 3: Wild Hunt", "imageUrl": "https://media.rawg.io/..." }
@@ -146,6 +134,41 @@ Host: localhost:5054
 ```
 
 Query params: `page >= 1` (default `1`), `pageSize 1–40` (default `20`), `search` optional.
+
+### `GET /games/search/details`
+
+```http
+GET /games/search/details?query=elden%20ring&page=1&pageSize=5&countryCode=US HTTP/1.1
+Host: localhost:5054
+```
+
+```json
+{
+  "count": 42,
+  "page": 1,
+  "pageSize": 5,
+  "totalPages": 9,
+  "hasNext": true,
+  "hasPrevious": false,
+  "next": "/games/search/details?query=elden%20ring&page=2&pageSize=5&countryCode=US",
+  "previous": null,
+  "results": [
+    {
+      "id": 3498,
+      "name": "Elden Ring",
+      "imageUrl": "https://media.rawg.io/...",
+      "imageUrls": ["https://media.rawg.io/...", "...", "..."],
+      "description": "...",
+      "released": "2022-02-25",
+      "rating": 4.65,
+      "steamAppId": 1245620,
+      "steamPrice": { "currency": "USD", "initial": 5999, "final": 3599, "discountPercent": 40, "initialFormatted": "$59.99", "finalFormatted": "$35.99" }
+    }
+  ]
+}
+```
+
+Query params: `query` (required), `page >= 1` (default `1`), `pageSize 1–10` (default `5`, capped because each hit fans out to detail + stores + screenshots + Steam calls hydrated in parallel), `countryCode` (default `US`).
 
 ### `GET /games/{id}`
 
@@ -196,193 +219,33 @@ Host: localhost:5054
 
 ---
 
-## 🗄️ Database
+## 📄 Pagination
 
-> **Status:** the current code is stateless (no DB — it proxies RAWG + Steam live on every request). This section documents the **complete-project (v1.0) schema** so the repo reads as a finished product and can be implemented without redesign.
+Both list endpoints forward pagination to RAWG and return a uniform envelope:
 
-### Why a database?
+| Field | Meaning |
+|---|---|
+| `count` | Total matches reported by RAWG |
+| `page` | Current 1-based page (clamped to `>= 1`) |
+| `pageSize` | Applied page size (`/games`: `1–40`, `/games/search/details`: `1–10`) |
+| `totalPages` | `ceil(count / pageSize)`, `0` when `count` is `0` |
+| `hasNext` / `hasPrevious` | Booleans for rendering pager controls |
+| `next` / `previous` | Backend-relative links (`/games?...`), `null` at the bounds — never RAWG URLs, so the RAWG key is never exposed |
+| `results` | Current page items |
 
-1. **Cache RAWG catalog** — avoid burning the RAWG quota on repeat queries.
-2. **Users & libraries** — favorites, wishlist, owned, playtime tracking.
-3. **Reviews** — first-party ratings to complement RAWG scores.
-4. **Price history** — scheduled Steam sync + price-drop alerts.
-
-### Choice: PostgreSQL 16
-
-- Native `citext` / case-insensitive search, `pg_trgm` for fuzzy game search.
-- `jsonb` for raw RAWG / Steam payloads (audit + re-hydration).
-- Works on Render Postgres, Neon, Supabase, or local Docker.
-- EF Core provider: `Npgsql.EntityFrameworkCore.PostgreSQL`.
-
-### ER diagram
-
-```mermaid
-erDiagram
-    Users ||--o{ Favorites : has
-    Users ||--o{ Reviews : writes
-    Users ||--o{ PriceAlerts : sets
-    Games ||--o{ Favorites : saved-in
-    Games ||--o{ Reviews : receives
-    Games ||--o{ PriceHistory : tracks
-    Games ||--o{ PriceAlerts : triggers
-
-    Users {
-        uuid id PK
-        string username UK
-        string email UK
-        string password_hash
-        timestamptz created_at
-    }
-    Games {
-        int rawg_id PK
-        string slug UK
-        string name
-        text description
-        date released
-        decimal rawg_rating
-        string cover_url
-        text[] image_urls
-        int steam_app_id
-        jsonb rawg_payload
-        timestamptz cached_at
-        timestamptz updated_at
-    }
-    Favorites {
-        uuid user_id FK
-        int game_id FK
-        string status "wishlist|favorite|owned|playing|completed"
-        timestamptz created_at
-    }
-    Reviews {
-        uuid id PK
-        uuid user_id FK
-        int game_id FK
-        smallint score "1-5"
-        text body
-        timestamptz created_at
-    }
-    PriceHistory {
-        bigint id PK
-        int game_id FK
-        int steam_app_id
-        char(2) country_code
-        string currency
-        int initial_cents
-        int final_cents
-        int discount_pct
-        timestamptz captured_at
-    }
-    PriceAlerts {
-        uuid id PK
-        uuid user_id FK
-        int game_id FK
-        int target_cents
-        bool triggered
-        timestamptz created_at
-    }
-```
-
-### DDL (PostgreSQL)
-
-Apply with `psql`, or let EF Core migrations generate it (`dotnet ef migrations add InitialCreate`).
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
-CREATE TABLE "Users" (
-  "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "Username" citext NOT NULL UNIQUE,
-  "Email" citext NOT NULL UNIQUE,
-  "PasswordHash" text NOT NULL,
-  "CreatedAt" timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE "Games" (
-  "RawgId" integer PRIMARY KEY,
-  "Slug" citext NOT NULL UNIQUE,
-  "Name" text NOT NULL,
-  "Description" text NULL,
-  "Released" date NULL,
-  "RawgRating" numeric(3,2) NULL,
-  "CoverUrl" text NULL,
-  "ImageUrls" text[] NOT NULL DEFAULT '{}',
-  "SteamAppId" integer NULL,
-  "RawgPayload" jsonb NULL,
-  "CachedAt" timestamptz NOT NULL DEFAULT now(),
-  "UpdatedAt" timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX "IX_Games_Name_Trgm" ON "Games" USING gin ("Name" gin_trgm_ops);
-
-CREATE TABLE "Favorites" (
-  "UserId" uuid NOT NULL REFERENCES "Users"("Id") ON DELETE CASCADE,
-  "GameId" integer NOT NULL REFERENCES "Games"("RawgId") ON DELETE CASCADE,
-  "Status" text NOT NULL DEFAULT 'wishlist'
-    CHECK ("Status" IN ('wishlist','favorite','owned','playing','completed')),
-  "CreatedAt" timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY ("UserId", "GameId")
-);
-
-CREATE TABLE "Reviews" (
-  "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "UserId" uuid NOT NULL REFERENCES "Users"("Id") ON DELETE CASCADE,
-  "GameId" integer NOT NULL REFERENCES "Games"("RawgId") ON DELETE CASCADE,
-  "Score" smallint NOT NULL CHECK ("Score" BETWEEN 1 AND 5),
-  "Body" text NULL,
-  "CreatedAt" timestamptz NOT NULL DEFAULT now(),
-  UNIQUE ("UserId", "GameId")
-);
-
-CREATE TABLE "PriceHistory" (
-  "Id" bigserial PRIMARY KEY,
-  "GameId" integer NOT NULL REFERENCES "Games"("RawgId") ON DELETE CASCADE,
-  "SteamAppId" integer NOT NULL,
-  "CountryCode" char(2) NOT NULL DEFAULT 'US',
-  "Currency" text NOT NULL,
-  "InitialCents" integer NOT NULL,
-  "FinalCents" integer NOT NULL,
-  "DiscountPct" integer NOT NULL DEFAULT 0,
-  "CapturedAt" timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX "IX_PriceHistory_Game_Captured" ON "PriceHistory" ("GameId", "CapturedAt" DESC);
-
-CREATE TABLE "PriceAlerts" (
-  "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "UserId" uuid NOT NULL REFERENCES "Users"("Id") ON DELETE CASCADE,
-  "GameId" integer NOT NULL REFERENCES "Games"("RawgId") ON DELETE CASCADE,
-  "TargetCents" integer NOT NULL,
-  "Triggered" boolean NOT NULL DEFAULT false,
-  "CreatedAt" timestamptz NOT NULL DEFAULT now()
-);
-```
-
-### Wiring it up (EF Core — planned)
-
-```bash
-# 1. Add packages
-dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
-dotnet add package Microsoft.EntityFrameworkCore.Design
-dotnet add package Microsoft.AspNetCore.Identity.EntityFrameworkCore
-
-# 2. Configure connection
-# appsettings.json:
-# "ConnectionStrings": { "Default": "Host=localhost;Database=gamerune;Username=postgres;Password=postgres" }
-# or env: ConnectionStrings__Default / DATABASE_URL (Render)
-
-# 3. Scaffold + migrate
-dotnet ef migrations add InitialCreate -o Data/Migrations
-dotnet ef database update
-```
-
-Planned `DbContext` location: `Data/GameRuneDbContext.cs` with `DbSet<Game>`, `DbSet<Favorite>`, `DbSet<Review>`, `DbSet<PriceHistoryEntry>`, `DbSet<PriceAlert>`.
-
-Planned v1.0 endpoints on top of this schema:
+RAWG mapping:
 
 ```text
-POST   /auth/register, POST /auth/login
-GET    /me/favorites  POST /me/favorites  DELETE /me/favorites/{rawgId}
-GET    /games/{id}/reviews   POST /games/{id}/reviews
-GET    /games/{id}/price-history?countryCode=US
-POST   /games/{id}/alerts
+/games?page=2&pageSize=20  →  GET https://api.rawg.io/api/games?key=...&page=2&page_size=20
+/games/search/details?query=x&page=1&pageSize=5 → GET .../games?key=...&search=x&page=1&page_size=5
+```
+
+Frontend usage:
+
+```text
+1. Render `totalPages` pages, disable Prev when `!hasPrevious`, Next when `!hasNext`.
+2. Follow `next` / `previous` as-is, or build `?page=N&pageSize=M` yourself.
+3. Keep `pageSize` stable while paging so `totalPages` stays consistent.
 ```
 
 ---
@@ -393,7 +256,7 @@ POST   /games/{id}/alerts
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) (`dotnet --version` → `10.x`)
 - A free [RAWG API key](https://rawg.io/apidocs)
-- Optional: Docker Desktop, `psql` / PgAdmin (for the v1.0 DB)
+- Optional: Docker Desktop
 
 ### 1. Clone
 
@@ -439,7 +302,6 @@ curl "http://localhost:5054/games/search/details?query=elden%20ring&pageSize=2"
 | `RateLimiting:GameApi:PermitLimit` | `appsettings.json` | `60` | Requests per window |
 | `RateLimiting:GameApi:WindowSeconds` | `appsettings.json` | `60` | Window size (s) |
 | `RateLimiting:GameApi:QueueLimit` | `appsettings.json` | `0` | Queued requests |
-| `ConnectionStrings:Default` | env / user-secrets (v1.0) | — | Postgres connection string |
 | `PORT` | Render / env | `5054` (dev) | Listening port (`Program.cs` binds `0.0.0.0:$PORT`) |
 
 Production overrides use environment variables with `__` nesting, e.g. `RateLimiting__GameApi__PermitLimit=120`.
@@ -487,7 +349,7 @@ Steps:
 1. Push to GitHub.
 2. Render → **New → Blueprint** → select repo (picks up `render.yaml`).
 3. Set `RAWG_API_KEY` in the Render dashboard (sync: false means manual).
-4. Deploy. For v1.0, add a **Render Postgres** instance and set `ConnectionStrings__Default` / `DATABASE_URL`.
+4. Deploy.
 
 ---
 
@@ -509,7 +371,6 @@ gamerune-backend/
 │   ├── RawgGameStoresResponse.cs
 │   ├── RawgScreenshotsResponse.cs
 │   └── SteamAppDetailsResponse.cs
-├── Data/                       # (v1.0) GameRuneDbContext + Migrations
 ├── Dockerfile                  # Multi-stage .NET 10 build
 ├── render.yaml                 # Render blueprint
 ├── appsettings.json
@@ -524,20 +385,6 @@ gamerune-backend/
 
 - **Rate limiting:** `AddFixedWindowLimiter("GameApi")` — 60 req / 60 s by default, `RejectionStatusCode: 429`, no queue. Tune via `RateLimiting:GameApi` in config.
 - **CORS:** named policy `Frontend`, `AllowAnyHeader + AllowAnyMethod`, origins from `Cors:AllowedOrigins`. Add your production Vercel URL there or via env: `Cors__AllowedOrigins__3=https://gamerune.vercel.app`.
-
----
-
-## 🗺️ Roadmap
-
-- [x] RAWG list / search / detail proxy
-- [x] Steam price aggregation + screenshots
-- [x] Rate limiting, CORS, Swagger, Docker, Render
-- [ ] PostgreSQL + EF Core cache layer (`Data/`)
-- [ ] Auth (Identity + JWT) + `/me/*` library endpoints
-- [ ] Reviews + price history + alerts
-- [ ] Background worker (`IHostedService`) for price sync
-- [ ] Redis response caching + ETag support
-- [ ] Tests (xUnit + WebApplicationFactory) + CI workflow
 
 ---
 

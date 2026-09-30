@@ -22,7 +22,7 @@ builder.Services.AddCors(options =>
     options.AddPolicy("Frontend", policy =>
     {
         var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-            ?? ["http://localhost:3000", "http://localhost:5173", "http://localhost:4200", "https://gamerune.vercel.app"];
+            ?? ["http://localhost:3000", "http://localhost:5173", "http://localhost:4200", "https://gamerune.vercel.app", "https://gamerune.janbaas.me/"];
 
         policy
             .WithOrigins(allowedOrigins)
@@ -108,8 +108,17 @@ app.MapGet("/games", async (
     return Results.Ok(new GamesResponse
     {
         Count = rawgResponse?.Count ?? 0,
-        Next = rawgResponse?.Next,
-        Previous = rawgResponse?.Previous,
+        Page = page,
+        PageSize = pageSize,
+        TotalPages = GetTotalPages(rawgResponse?.Count ?? 0, pageSize),
+        HasNext = HasNextPage(rawgResponse?.Count ?? 0, page, pageSize),
+        HasPrevious = page > 1,
+        Next = HasNextPage(rawgResponse?.Count ?? 0, page, pageSize)
+            ? BuildGamesPageLink(page + 1, pageSize, search)
+            : null,
+        Previous = page > 1
+            ? BuildGamesPageLink(page - 1, pageSize, search)
+            : null,
         Results = games
     });
 })
@@ -151,23 +160,29 @@ app.MapGet("/games/search/details", async (
     }
 
     var rawgSearch = await searchResponse.Content.ReadFromJsonAsync<RawgGamesResponse>(cancellationToken);
-    var results = new List<GameDetailDto>();
+    var hits = rawgSearch?.Results ?? [];
+    var count = rawgSearch?.Count ?? 0;
 
-    foreach (var game in rawgSearch?.Results ?? [])
-    {
-        var gameDetail = await GetGameDetailAsync(rawgClient, steamClient, rawgApiKey, game.Id.ToString(), countryCode, cancellationToken);
-        if (gameDetail is not null)
-        {
-            results.Add(gameDetail);
-        }
-    }
+    var detailTasks = hits.Select(game =>
+        GetGameDetailAsync(rawgClient, steamClient, rawgApiKey, game.Id.ToString(), countryCode, cancellationToken));
+    var details = await Task.WhenAll(detailTasks);
+    var results = details.Where(detail => detail is not null).Cast<GameDetailDto>().ToArray();
 
     return Results.Ok(new GameDetailSearchResponse
     {
-        Count = rawgSearch?.Count ?? 0,
-        Next = rawgSearch?.Next,
-        Previous = rawgSearch?.Previous,
-        Results = [.. results]
+        Count = count,
+        Page = page,
+        PageSize = pageSize,
+        TotalPages = GetTotalPages(count, pageSize),
+        HasNext = HasNextPage(count, page, pageSize),
+        HasPrevious = page > 1,
+        Next = HasNextPage(count, page, pageSize)
+            ? BuildSearchPageLink(query, page + 1, pageSize, countryCode)
+            : null,
+        Previous = page > 1
+            ? BuildSearchPageLink(query, page - 1, pageSize, countryCode)
+            : null,
+        Results = results
     });
 })
 .WithName("SearchGameDetails")
@@ -327,6 +342,42 @@ static async Task<SteamPriceDto?> GetSteamPriceAsync(HttpClient steamClient, int
             FinalFormatted = "Free"
         }
         : null);
+}
+
+static int GetTotalPages(int count, int pageSize)
+{
+    if (pageSize <= 0 || count <= 0)
+    {
+        return 0;
+    }
+
+    return (int)Math.Ceiling(count / (double)pageSize);
+}
+
+static bool HasNextPage(int count, int page, int pageSize)
+{
+    if (pageSize <= 0 || count <= 0)
+    {
+        return false;
+    }
+
+    return page < GetTotalPages(count, pageSize);
+}
+
+static string BuildGamesPageLink(int page, int pageSize, string? search)
+{
+    var link = $"/games?page={page}&pageSize={pageSize}";
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        link += $"&search={Uri.EscapeDataString(search)}";
+    }
+
+    return link;
+}
+
+static string BuildSearchPageLink(string query, int page, int pageSize, string countryCode)
+{
+    return $"/games/search/details?query={Uri.EscapeDataString(query)}&page={page}&pageSize={pageSize}&countryCode={Uri.EscapeDataString(countryCode ?? "US")}";
 }
 
 static int? ExtractSteamAppId(string storeUrl)
